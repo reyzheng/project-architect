@@ -148,6 +148,27 @@ frontmatter 至少包含：
 | `tools` | No | 此 subagent 可使用的工具；建議明確指定，若省略則繼承主 session 工具 |
 | `model` | No | 指定模型，例如 `sonnet` |
 
+### Subagent Description Routing Rules
+
+Claude Code 會高度依賴 YAML frontmatter 的 `description` 判斷是否自動委派任務給 subagent。
+因此四個 subagents 的 `description` 必須明確、互斥，避免使用過度通用的描述。
+
+Rules:
+
+- 每個 `description` 必須聚焦該 agent 的 workflow domain。
+- 避免在多個 agents 中重複使用 generic phrases，例如 `analyze codebase`、`generate workflows`。
+- `description` 應包含該 agent 負責的具體 workflow 類型。
+- `description` 不應宣稱負責其他 agent 的 domain。
+
+Recommended descriptions:
+
+| Agent | Recommended `description` |
+|-------|---------------------------|
+| `plan-agent` | Creates architecture documents, requirements specifications, threat models, and software design workflows. |
+| `build-agent` | Defines project build, compilation, packaging, artifact generation, and dependency tree workflows. |
+| `test-agent` | Defines unit test, integration test, SAST, DAST, SCA, secret scanning, and code review workflows. |
+| `release-agent` | Defines release, deployment, smoke test, rollout, rollback, and delivery verification workflows. |
+
 body 至少定義：
 
 - 此 subagent 負責的 workflow domain。
@@ -160,7 +181,7 @@ body 至少定義：
 - workflow metadata 必須放在 `pipeline.yaml`。
 - local secrets 與 machine-specific settings 必須放在 `pipeline_config.local.yaml`。
 
-範例：
+Subagent 範例：
 
 ```md
 ---
@@ -266,11 +287,91 @@ Rules:
 - `export const meta`
 - 清楚的 phases
 - 對應 stage 的 `agent()` 呼叫
+- 若 workflow 需要 local config，第一個 stage 應做 config validation
 - 需要資料傳遞時使用 schema
 - 失敗時回報可重跑方式
 - 不在 workflow script 中直接讀寫檔案或跑 shell
 
-範例：
+### Config Validation Stage
+
+若 workflow 需要讀取 `pipeline_config.local.yaml`，第一個 stage 應透過 `agent()` 做 config validation。
+
+此 validation agent 負責：
+
+- 讀取 `.claude/pipelines/{flow}/pipeline_config.local.yaml`。
+- 確認 required keys 是否存在。
+- 確認必要 local paths 是否存在或格式合理。
+- 判斷哪些 stages 可以執行，哪些 stages 因缺少設定應 skip。
+- 以 schema 回傳 redacted config status。
+
+validation agent 不得回傳 secrets 給 workflow JS，包括 tokens、passwords、API keys、private keys。
+後續執行 Python/CLI/API 的 agent 或 script 應自行讀取 `pipeline_config.local.yaml`。
+
+建議回傳格式：
+
+```javascript
+const configStatus = await agent({
+  prompt: `Validate .claude/pipelines/sast-scan/pipeline_config.local.yaml.
+Return only redacted status. Do not return tokens, passwords, API keys, or private keys.`,
+  schema: CONFIG_STATUS_SCHEMA,
+})
+```
+
+後續 stage 可依 `configStatus` 決定 run / skip，但不得把 secret value 拼入 prompt。
+
+### Workflow Failure Handling
+
+每個 generated workflow 應明確處理 stage failure，避免背景 workflow 失敗後只留下不完整的輸出。
+
+Rules:
+
+- 每個 stage 的 `agent()` 回傳應盡量包含 `success`、`stage`、`exitCode`、`stdoutSummary`、`stderrSummary`、`logPath`。
+- 若某個 stage 失敗，workflow 應停止後續 dependent stages。
+- workflow 應呼叫最後一個 reporter agent，產生 `.claude/pipelines/{flow}/reports/error-report.md`。
+- error report 不得包含 secrets、tokens、passwords、API keys 或 private keys。
+
+error report 應包含：
+
+- workflow name
+- failed stage
+- script path
+- exit code
+- failing command / file / line if available
+- stdout/stderr summary
+- local log path
+- suggested fix
+- suggested rerun command
+
+Failure handling 範例：
+
+```javascript
+try {
+  const configStatus = await agent({
+    prompt: `Validate .claude/pipelines/sast-scan/pipeline_config.local.yaml.
+Return redacted config status only.`,
+    schema: CONFIG_STATUS_SCHEMA,
+  })
+
+  const findings = await agent({
+    prompt: `Run .claude/pipelines/sast-scan/scripts/analyze.py.
+Return success, exit code, stdout/stderr summary, and log path.`,
+    schema: STAGE_RESULT_SCHEMA,
+  })
+
+  if (!findings.success) {
+    throw new Error(JSON.stringify(findings))
+  }
+} catch (error) {
+  await agent({
+    prompt: `Create .claude/pipelines/sast-scan/reports/error-report.md.
+Use this failure context, redact secrets, and include rerun guidance:
+${String(error)}`,
+  })
+  throw error
+}
+```
+
+Workflow 範例：
 
 ```javascript
 export const meta = {
