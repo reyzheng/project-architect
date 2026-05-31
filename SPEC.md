@@ -169,6 +169,28 @@ Recommended descriptions:
 | `test-agent` | Defines unit test, integration test, SAST, DAST, SCA, secret scanning, and code review workflows. |
 | `release-agent` | Defines release, deployment, smoke test, rollout, rollback, and delivery verification workflows. |
 
+### Subagent Capability Reuse Rules
+
+Subagents 應在相關時優先重用既有 Claude skills、MCP servers、templates 與 reference knowledge base，而不是重新發明已存在的能力。
+
+Rules:
+
+- 優先使用既有 project/user/plugin skills，再考慮產生新的 workflow logic。
+- 只有當 skill 與該 subagent domain 直接相關時，才透過 frontmatter `skills` 預載。
+- 只有當 MCP server 是該 subagent 必要能力時，才透過 frontmatter `mcpServers` 指定。
+- 不要預設給所有 subagents 廣泛 MCP/tool access；採最小權限。
+- 若必要 MCP servers 或 skills 不存在，subagent 應回報 missing capability，並產生 safe fallback 或 draft。
+- 不得將 secrets、tokens、MCP credentials 或 local-only settings 寫入 generated files。
+
+建議：
+
+| Agent | Capability reuse guidance |
+|-------|---------------------------|
+| `plan-agent` | 優先使用 project docs、architecture references、NIST SSDF/security planning skills；通常不需要外部 MCP。 |
+| `build-agent` | 可重用 package manager、build system、dependency analysis 相關 skills/MCP，但不得自動取得 deployment 權限。 |
+| `test-agent` | 可重用 security scanner、test framework、issue tracker、GitHub 相關 skills/MCP，但必須限制 credentials 與寫入範圍。 |
+| `release-agent` | 可重用 CI/CD、GitHub、deployment verification 相關 skills/MCP，但 release/deploy 類操作必須有明確使用者意圖。 |
+
 body 至少定義：
 
 - 此 subagent 負責的 workflow domain。
