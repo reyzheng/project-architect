@@ -147,6 +147,7 @@ frontmatter 至少包含：
 | `description` | Yes | Claude Code 用來判斷何時委派給此 subagent 的描述 |
 | `tools` | No | 此 subagent 可使用的工具；建議明確指定，若省略則繼承主 session 工具 |
 | `model` | No | 指定模型，例如 `sonnet` |
+| `memory` | No | Persistent memory scope，可為 `user`、`project` 或 `local` |
 
 ### Subagent Description Routing Rules
 
@@ -191,6 +192,64 @@ Rules:
 | `test-agent` | 可重用 security scanner、test framework、issue tracker、GitHub 相關 skills/MCP，但必須限制 credentials 與寫入範圍。 |
 | `release-agent` | 可重用 CI/CD、GitHub、deployment verification 相關 skills/MCP，但 release/deploy 類操作必須有明確使用者意圖。 |
 
+### Inter-Agent Collaboration Rules
+
+四個 subagents 不直接彼此呼叫或互相聊天；協作由 `project-architect`、`pipeline-architect` 或 workflow JS 作為 coordinator。
+
+第一版採用簡單的 shared state artifacts：
+
+```text
+.claude/state/
+├── build-context.yaml
+├── test-status.yaml
+├── security-summary.yaml
+└── release-gates.yaml
+```
+
+用途：
+
+- `build-agent` 可寫入 `build-context.yaml`，記錄 build command、package manager、dependency summary、artifact paths。
+- `test-agent` 可讀取 `build-context.yaml`，並寫入 `test-status.yaml` 與 `security-summary.yaml`。
+- `release-agent` 可讀取 `test-status.yaml`、`security-summary.yaml`，並產生或更新 `release-gates.yaml`。
+- `plan-agent` 可讀取這些 state artifacts 來更新 architecture 或 threat-model workflows 的上下文。
+
+Rules:
+
+- shared state 必須是小型、結構化、可讀的 YAML。
+- shared state 不得包含 secrets、tokens、passwords、API keys、private keys 或 local-only sensitive paths。
+- 每個 shared state artifact 應包含 `updated_by`、`updated_at`、`source_workflow` 與 `summary`。
+- release 相關判斷不得只相信過期 state；必須檢查 `updated_at` 與 `source_workflow`。
+- 若 state 缺失或過期，subagent 應回報 missing context，並產生 safe draft，而不是猜測。
+- 不建立單一巨大 `.claude/state.json`。
+
+### Subagent Persistent Memory Rules
+
+Subagents 可以在需要長期學習時啟用 Claude Code persistent memory。
+
+建議預設：
+
+- 專案本機學習使用 `memory: local`。
+- 團隊可共享且不含機敏資訊的專案知識才使用 `memory: project`。
+- 跨專案的個人慣例才使用 `memory: user`。
+
+官方 memory 目錄：
+
+| Scope | Location | 用途 |
+|-------|----------|------|
+| `user` | `~/.claude/agent-memory/{agent-name}/` | 跨專案個人記憶 |
+| `project` | `.claude/agent-memory/{agent-name}/` | 可 commit 的團隊共享專案記憶 |
+| `local` | `.claude/agent-memory-local/{agent-name}/` | gitignored 的本機專案記憶 |
+
+Rules:
+
+- 不使用 `memory: true`；必須明確指定 `user`、`project` 或 `local`。
+- 不自行建立 `.claude/memory/{agent-name}.json`；使用 Claude Code 官方 memory directory 與 `MEMORY.md`。
+- 不得將 secrets、tokens、passwords、API keys、private keys 或 MCP credentials 寫入 memory。
+- 不得將 raw logs、完整 scanner outputs 或大量 stdout/stderr 寫入 memory。
+- 只記錄可重用且經整理的經驗，例如 recurring false positive patterns、toolchain quirks、project-specific exclusions、known build/test constraints。
+- 若 false positive suppression 是正式專案政策，應優先寫入 `pipeline.yaml` 或 scanner config，而不是只存在 memory。
+- memory notes 應簡短，並說明適用條件與來源。
+
 body 至少定義：
 
 - 此 subagent 負責的 workflow domain。
@@ -202,6 +261,7 @@ body 至少定義：
 - 不得 hardcode credentials、tokens、server URLs 或 local-only paths。
 - workflow metadata 必須放在 `pipeline.yaml`。
 - local secrets 與 machine-specific settings 必須放在 `pipeline_config.local.yaml`。
+- 若啟用 persistent memory，只能寫入可重用且去敏感的經驗教訓。
 
 Subagent 範例：
 
@@ -211,6 +271,7 @@ name: test-agent
 description: Builds Testing, Security, and Review workflows for the current project.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
+memory: local
 ---
 
 You are the Testing, Security, and Review workflow architect for this project.
@@ -363,6 +424,36 @@ error report 應包含：
 - local log path
 - suggested fix
 - suggested rerun command
+
+### Self-Healing Draft Generation
+
+當 workflow stage 失敗並產生 `error-report.md` 後，workflow 可以呼叫 healer agent 嘗試產生修補 draft。
+
+Self-healing 的目標是降低使用者手動診斷成本；它不得自動套用修補，也不得自動重跑正式 workflow。
+
+流程：
+
+```text
+stage failure
+  → reporter agent 產生 error-report.md
+  → healer agent 讀取 error-report、redacted logs、pipeline.yaml、workflow JS 與相關 scripts
+  → 產生 .draft/ 修補版本
+  → 產生 healing-summary.md
+  → workflow 結束，等待使用者透過 pipeline-architect 確認或修訂
+```
+
+Rules:
+
+- self-healing 只產生 draft，不直接修改正式 workflow、scripts 或 config。
+- draft 寫入 `.claude/pipelines/{flow}/.draft/`。
+- healing summary 寫入 `.claude/pipelines/{flow}/.draft/healing-summary.md`。
+- healer agent 只能使用 `error-report.md`、redacted logs、`pipeline.yaml`、workflow JS 與相關 scripts。
+- healer agent 不得讀取、複製或推測 secrets、tokens、passwords、API keys、private keys。
+- healer agent 不得把 credentials 或 sensitive local-only paths 寫入 draft。
+- 每次 workflow run 最多執行一次 healing attempt，避免 loop。
+- 若錯誤原因是缺少 config/credentials，healer 不應猜測值，只能更新 config skeleton 或在 summary 中提示使用者補值。
+- release/deploy 類 workflows 不得自動套用 self-healing patch。
+- 使用者必須透過 `pipeline-architect` 確認或修訂 healing draft。
 
 Failure handling 範例：
 
