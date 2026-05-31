@@ -73,8 +73,10 @@ This skill must instruct Claude Code to:
   - `.claude/agents/test-agent.md`
   - `.claude/agents/release-agent.md`
 - ensure each generated subagent is a Markdown file with YAML frontmatter plus a Markdown body
+- configure `memory: local` in generated subagents frontmatter for localized, gitignored persistent learning.
 - ensure each generated subagent reads `.claude/project-plan.md`
 - ensure each generated subagent produces workflows only in its own domain
+- create or update CLAUDE.md using HTML marker blocks (`<!-- project-architect:start -->` and `<!-- project-architect:end -->`) non-destructively to output active workflows/subagents hints.
 
 ## 4. Subagent Routing Requirements
 
@@ -91,6 +93,16 @@ release-agent: Defines release, deployment, smoke test, rollout, rollback, and d
 ```
 
 Avoid generic repeated phrases such as `analyze codebase` or `generate workflows` in multiple subagent descriptions.
+
+## 4.5 Subagent Capability Reuse & Shared State
+
+When generating subagents and workflows, strictly enforce:
+
+- Prioritize using existing skills or configured MCP servers (e.g. Git, JIRA, Gerrit) over generating redundant custom API/CLI scripts.
+- Specify `skills` and `mcpServers` in subagent frontmatter using the Principle of Least Privilege.
+- If a required MCP or Skill is missing, subagents must report a `missing capability` and output a safe fallback/draft, not fail.
+- Subagents collaborate asynchronously by reading/writing small, structured YAMLs under `.claude/state/` (`build-context.yaml`, `test-status.yaml`, etc.).
+- Shared states must contain `updated_by`, `updated_at`, `source_workflow`, and `summary`. Never store secrets in states.
 
 ## 5. Pipeline Architect Skill Requirements
 
@@ -135,7 +147,7 @@ The validation agent must:
 Later execution agents or Python scripts should read `pipeline_config.local.yaml` themselves.
 Do not pass secrets through workflow variables or prompts.
 
-## 8. Failure Handling Requirement
+## 8. Failure Handling & Self-Healing
 
 Generated workflows must include explicit failure handling.
 
@@ -155,6 +167,12 @@ If a stage fails:
 - create `.claude/pipelines/{flow}/reports/error-report.md`
 - redact secrets
 - include failed stage, script path, exit code, stdout/stderr summary, local log path, suggested fix, and suggested rerun command
+- **Self-Healing Draft**: trigger a healer agent to inspect the error-report, redacted logs, and source files to generate a repaired version inside `.draft/` along with `.draft/healing-summary.md`.
+- self-healing must only generate drafts under `.draft/` and never directly modify active files or auto-apply code changes.
+- limit self-healing to a maximum of one attempt per run to prevent infinite loops.
+- if error is due to missing configuration, healer must update the config skeleton and prompt the user in the summary, not guess credentials.
+- release/deploy workflows must not auto-apply self-healing.
+- promotion of healing drafts requires user confirmation via `pipeline-architect`.
 
 ## 9. SAST Workflow Example
 
