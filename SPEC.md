@@ -84,7 +84,8 @@ pipeline-architect skill
    - `.claude/agents/build-agent.md`
    - `.claude/agents/test-agent.md`
    - `.claude/agents/release-agent.md`
-4. 指示四個 subagents 根據 plan 產生對應領域的 workflows。
+4. 產生或更新 `CLAUDE.md` 中的 project guidance 區塊，提供簡短 subagent/workflow routing hints。
+5. 指示四個 subagents 根據 plan 產生對應領域的 workflows。
 
 ### Project Plan
 
@@ -111,7 +112,39 @@ pipeline-architect skill
 4. 若安全需求未定義，Claude 以 NIST SSDF 作為預設安全基準，推薦對應的 security workflows。
 5. 使用者可直接修改 plan，或要求 Claude 修訂。
 6. plan 穩定後，Claude 產生/更新四個 subagents。
-7. 四個 subagents 依 plan 建立 workflows。
+7. Claude 更新 `CLAUDE.md` project guidance 區塊。
+8. 四個 subagents 依 plan 建立 workflows。
+
+### CLAUDE.md Project Guidance Rules
+
+`project-architect` 可以在專案層 `CLAUDE.md` 中建立或更新一個專屬區塊，讓 Claude Code 每次進入此 repo 時都能快速知道可用 subagents 與 workflows。
+
+此區塊只提供簡短 routing hints，不是唯一 source of truth。詳細規格仍以 `SPEC.md`、`.claude/project-plan.md` 與 `.claude/pipelines/{flow}/pipeline.yaml` 為準。
+
+`project-architect` 必須使用 marker block 更新自己的區塊，不得覆蓋使用者原本的 `CLAUDE.md` 內容：
+
+```md
+<!-- project-architect:start -->
+## Active Workflows & Subagents
+
+- For architecture documents, requirements, threat models, and software design workflows, use `@plan-agent`.
+- For build, compilation, packaging, artifacts, and dependency tree workflows, use `@build-agent`.
+- For tests, SAST, DAST, SCA, secret scanning, and code review workflows, use `@test-agent`.
+- For release, deployment, smoke tests, rollout, rollback, and delivery verification workflows, use `@release-agent`.
+
+Generated workflows live in `.claude/workflows/`.
+Pipeline metadata lives in `.claude/pipelines/{flow}/pipeline.yaml`.
+Local secrets and machine-specific settings live in `.claude/pipelines/{flow}/pipeline_config.local.yaml` and must not be committed.
+<!-- project-architect:end -->
+```
+
+Rules:
+
+- 如果 `CLAUDE.md` 不存在，可以建立新檔案。
+- 如果 `CLAUDE.md` 已存在，只能新增或更新 marker block 內的內容。
+- guidance 必須保持簡短，避免污染每次 session context。
+- 不得在 `CLAUDE.md` 寫入 secrets、tokens、passwords、API keys、private keys、raw logs 或完整 pipeline config。
+- 不得把 `CLAUDE.md` 當作 workflow metadata 的唯一來源。
 
 ### 產生的 Subagents
 
